@@ -1,9 +1,15 @@
-from typing import Tuple, Set, TypedDict, List, Optional, Dict  # NEW: Optional/Dict for ChallengeRenderer typing
+from typing import Tuple, Set, TypedDict, List
 import random
 from maze import Maze, HuntAndKillGenerator, Cell, add_42_pattern
 from path_finder import PathFinder
+from maze_utils import safe_random_cell  # NEW: shared helper, replaces local copy
+from render_utils import load_font, recalculate_geometry  # NEW: shared helpers
 import pygame
 import os
+# NOTE: ChallengeRenderer used to live in this file. It has moved to
+# challenge/base.py (+ challenge/level1.py, level2.py, level3.py) so
+# all challenge-mode code lives together and each level is its own
+# small file. See challenge/runner.py for how it's launched now.
 
 
 class Palette(TypedDict):
@@ -116,20 +122,12 @@ class Renderer:
 
         self.screen = screen
 
-        _HERE = os.path.dirname(os.path.abspath(__file__))
-        _candidates = [
-            os.path.join(_HERE, "DejaVuSans.ttf"),
-            os.path.join(_HERE, "dejavu-sans", "DejaVuSans.ttf"),
-        ]
-        def _load_font(size: int) -> pygame.font.Font:
-            for path in _candidates:
-                if os.path.isfile(path):
-                    return pygame.font.Font(path, size)
-            return pygame.font.SysFont(None, size)
-
-        self.font       = _load_font(20)
-        self.font_opt   = _load_font(22)
-        self.font_title = _load_font(26)
+        # NEW: font loading moved to render_utils.load_font, shared with
+        # ChallengeRenderer instead of each class having its own copy.
+        _here = os.path.dirname(os.path.abspath(__file__))
+        self.font       = load_font(20, _here)
+        self.font_opt   = load_font(22, _here)
+        self.font_title = load_font(26, _here)
 
         self._path_dir_out:  dict = {}   # cell → direction leaving it
         self._path_dir_in:   dict = {}   # cell → direction arriving into it
@@ -525,18 +523,9 @@ class Renderer:
         if draw_panel:
             self._draw_colour_panel()
 
-    def _safe_random_cell(self, test_maze: Maze, w: int, h: int) -> Tuple[int, int]:
-        """
-        pick a random (x, y) inside the maze that is not on the
-        42 pattern. Re-rolls until it finds a free cell — same approach
-        menu.py uses for the initial Random Maze entry/exit picks.
-        """
-        while True:
-            x = random.randint(0, w - 1)
-            y = random.randint(0, h - 1)
-            cell = test_maze.get_cell(x, y)
-            if cell is not None and not cell.is_pattern:
-                return x, y
+    # NEW: _safe_random_cell removed from here — it's now the shared
+    # maze_utils.safe_random_cell() function, used below in
+    # _action_regenerate instead of a local copy.
 
     def _action_regenerate(self) -> None:
         """
@@ -558,10 +547,10 @@ class Renderer:
 
             test_maze = Maze(width, height)
             add_42_pattern(test_maze)
-            entry = self._safe_random_cell(test_maze, width, height)
-            exit_ = self._safe_random_cell(test_maze, width, height)
+            entry = safe_random_cell(test_maze, width, height)
+            exit_ = safe_random_cell(test_maze, width, height)
             while exit_ == entry:
-                exit_ = self._safe_random_cell(test_maze, width, height)
+                exit_ = safe_random_cell(test_maze, width, height)
 
             self.entry = entry
             self.exit  = exit_
@@ -584,24 +573,20 @@ class Renderer:
 
     def _recalculate_geometry(self) -> None:
         """
-        # recompute cell_length, stroke_length and padding for the
-        # current self.maze size. Mirrors the geometry block that used
-        # to live inline in __init__, factored out so _action_regenerate
-        # can call it again after width/height change.
+        Recompute cell_length, stroke_length and padding for the
+        current self.maze size. Mirrors the geometry block that used
+        to live inline in __init__, factored out so _action_regenerate
+        can call it again after width/height change.
+
+        NEW: the actual math now lives in render_utils.recalculate_geometry
+        so Renderer and ChallengeRenderer share one implementation
+        instead of each having their own copy.
         """
-        available_w = self.maze_area_width  - 2 * self.min_padding
-        available_h = self.maze_area_height - 2 * self.min_padding
-
-        step_w = (available_w * 9) // (9 * self.maze.width  + 1)
-        step_h = (available_h * 9) // (9 * self.maze.height + 1)
-        step = min(step_w, step_h)
-
-        self.stroke_length = max(1, step // 3)
-        self.cell_length   = step + self.stroke_length
-        real_width  = self.maze.width  * step + self.stroke_length
-        real_height = self.maze.height * step + self.stroke_length
-        self.padding_x_side = (self.maze_area_width  - real_width)  // 2
-        self.padding_y_side = (self.maze_area_height - real_height) // 2
+        (self.cell_length, self.stroke_length,
+         self.padding_x_side, self.padding_y_side) = recalculate_geometry(
+            self.maze_area_width, self.maze_area_height,
+            self.maze.width, self.maze.height, self.min_padding,
+        )
     # ── main loop ────────────────────────────────────────────────────────
 
     def run(self) -> bool:
@@ -623,593 +608,3 @@ class Renderer:
             pygame.display.flip()
 
         return self.back_to_menu
-
-
-class ChallengeRenderer:  # NEW: fully rewritten
-
-    """
-    Two-player race mode — three levels with escalating mechanics.
-
-    All levels share:
-      * Fast animated thin-LINE path reveal (not filled squares).
-      * Fading 5-cell trace per player, offset left / right of center.
-      * Split-circle avatar when both players share a cell.
-      * P1 soft-purple / P2 warm-gold, readable on every palette.
-
-    Level 1 (Nordic Forest):    plain race after memorizing the path.
-    Level 2 (Synthwave Sunset): collectables dropped every 12th step.
-    Level 3 (Tokyo Night):      chaser follows path; reach exit first.
-    """
-
-    # NEW: level -> maze size
-    LEVEL_SIZES = {
-        1: (20, 20),
-        2: (30, 30),
-        3: (40, 40),
-    }
-
-    # NEW: which PALETTES[] entry each level uses
-    LEVEL_PALETTE = {
-        1: 3,   # "Nordic Forest"
-        2: 2,   # "Synthwave Sunset"
-        3: 1,   # "Tokyo Night"
-    }
-
-    # NEW: path-reveal line speed (ms per step) — fast flash
-    REVEAL_LINE_DELAY_MS = 18
-
-    # NEW: pause after line completes before hiding
-    REVEAL_HOLD_MS = 600
-
-    # NEW: player colours readable on all four palettes
-    P1_COLOUR = (180, 100, 220)   # soft purple
-    P2_COLOUR = (220, 175,  30)   # warm gold
-
-    # NEW: fading trace settings
-    TRACE_LEN    = 5    # cells kept in trail
-    TRACE_OFFSET = 4    # px left/right offset from cell center
-
-    def __init__(self,
-                 maze: Maze,
-                 entry: Tuple[int, int],
-                 exit: Tuple[int, int],
-                 path: Tuple[List[Cell], List[str]],
-                 level: int,
-                 screen: pygame.Surface) -> None:
-
-        self.maze   = maze
-        self.entry  = entry
-        self.exit   = exit
-        self.path   = path
-        self.level  = level
-        self.screen = screen
-
-        self.window_width, self.window_height = screen.get_size()
-        self.info_width       = 300
-        self.min_padding      = 20
-        self.maze_area_width  = self.window_width  - self.info_width
-        self.maze_area_height = self.window_height
-
-        self.canvas      = pygame.Surface((self.maze_area_width,
-                                           self.maze_area_height))
-        self.info_canvas = pygame.Surface((self.info_width,
-                                           self.window_height))
-
-        _HERE = os.path.dirname(os.path.abspath(__file__))
-        _candidates = [
-            os.path.join(_HERE, "DejaVuSans.ttf"),
-            os.path.join(_HERE, "dejavu-sans", "DejaVuSans.ttf"),
-        ]
-        def _load_font(size: int) -> pygame.font.Font:
-            for fpath in _candidates:
-                if os.path.isfile(fpath):
-                    return pygame.font.Font(fpath, size)
-            return pygame.font.SysFont(None, size)
-
-        self.font       = _load_font(20)
-        self.font_big   = _load_font(40)
-        self.font_title = _load_font(28)
-
-        # NEW: pick palette by level
-        p = PALETTES[self.LEVEL_PALETTE.get(level, 0)]
-        self.bg_colour       = p["bg"]
-        self.wall_colour     = p["wall"]
-        self.entry_colour    = p["entry"]
-        self.exit_colour     = p["exit"]
-        self.path_colour     = p["path"]
-        self.protect_colour  = p["pattern"]
-        self.interior_colour = p["interior"]
-        self.text_colour     = (255, 255, 255)
-        self.p1_colour       = self.P1_COLOUR
-        self.p2_colour       = self.P2_COLOUR
-
-        self._recalculate_geometry()
-
-        # player state
-        self.p1_pos = entry
-        self.p2_pos = entry
-        # NEW: traces — list of last TRACE_LEN positions before current
-        self.p1_trace: List[Tuple[int, int]] = []
-        self.p2_trace: List[Tuple[int, int]] = []
-
-        # NEW: path-reveal animation (thin animated line, not filled cells)
-        self.reveal_line_index = 0    # how far along the line is drawn
-        self.reveal_line_timer = 0    # ms accumulator
-        self.reveal_hold_timer = 0    # ms spent in post-line hold
-        self.reveal_done       = False
-
-        # race state
-        self.race_started   = False
-        self.elapsed_ms     = 0
-        self.winner: Optional[str] = None
-        self.winner_time_ms = 0
-
-        # Level 2 collectables
-        # Every 12th path cell becomes a collectable triangle.
-        # They are added progressively as the reveal line passes them.
-        self.collectables: set = set()
-        self.p1_collected = 0
-        self.p2_collected = 0
-
-        # NEW: Level 3 chaser
-        # Walks the solution path after reveal; reaches exit -> both lose.
-        self.chaser_index = 0
-        self.chaser_timer = 0
-        path_len = max(1, len(self.path[0]))
-        # target crossing time: ~30 seconds (adjusts with path length)
-        self.chaser_delay_ms = max(80, 30_000 // path_len)
-
-        self.running = True
-        self.result: Optional[str] = None
-        self.clock   = pygame.time.Clock()
-
-    # ------------------------------------------------------------------ geometry
-
-    def _recalculate_geometry(self) -> None:
-        available_w = self.maze_area_width  - 2 * self.min_padding
-        available_h = self.maze_area_height - 2 * self.min_padding
-        step_w = (available_w * 9) // (9 * self.maze.width  + 1)
-        step_h = (available_h * 9) // (9 * self.maze.height + 1)
-        step   = min(step_w, step_h)
-        self.stroke_length  = max(1, step // 3)
-        self.cell_length    = step + self.stroke_length
-        real_w  = self.maze.width  * step + self.stroke_length
-        real_h  = self.maze.height * step + self.stroke_length
-        self.padding_x_side = (self.maze_area_width  - real_w)  // 2
-        self.padding_y_side = (self.maze_area_height - real_h) // 2
-
-    # ------------------------------------------------------------------ helpers
-
-    def _cell_center(self, x: int, y: int) -> Tuple[int, int]:
-        """Pixel center of maze cell (x, y)."""
-        step = self.cell_length - self.stroke_length
-        return (x * step + self.padding_x_side + self.cell_length // 2,
-                y * step + self.padding_y_side + self.cell_length // 2)
-
-    def _cell_top_left(self, x: int, y: int) -> Tuple[int, int]:
-        step = self.cell_length - self.stroke_length
-        return (x * step + self.padding_x_side,
-                y * step + self.padding_y_side)
-
-    @staticmethod
-    def _dim(colour: Tuple[int, int, int], alpha: int) -> Tuple[int, int, int]:
-        """NEW: Darken colour by alpha (255 = full, 0 = black). No Surface needed."""
-        a = alpha / 255.0
-        return (int(colour[0] * a), int(colour[1] * a), int(colour[2] * a))
-
-    # ------------------------------------------------------------------ movement
-
-    def _try_move(self, pos: Tuple[int, int], direction: str) -> Tuple[int, int]:
-        cell = self.maze.get_cell(*pos)
-        if cell is None or cell.walls[direction]:
-            return pos
-        dx, dy = {"N": (0,-1), "S": (0,1), "E": (1,0), "W": (-1,0)}[direction]
-        return (pos[0] + dx, pos[1] + dy)
-
-    def _push_trace(self, trace: List, pos: Tuple[int, int]) -> List:
-        """NEW: Append pos, keep only last TRACE_LEN entries."""
-        return (trace + [pos])[-self.TRACE_LEN:]
-
-    def _collect(self) -> None:
-        """NEW: Remove any collectables under either player."""
-        if self.p1_pos in self.collectables:
-            self.collectables.discard(self.p1_pos)
-            self.p1_collected += 1
-        if self.p2_pos in self.collectables:
-            self.collectables.discard(self.p2_pos)
-            self.p2_collected += 1
-
-    # ------------------------------------------------------------------ events
-
-    def _handle_events(self) -> None:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-                self.result  = "menu"
-
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.running = False
-                    self.result  = "menu"
-                    continue
-
-                if self.winner is not None:
-                    if event.key == pygame.K_RETURN:
-                        self.running = False
-                        self.result  = "next_level"
-                    continue
-
-                if not self.race_started:
-                    continue
-
-                # Player 1 — arrow keys
-                new1 = None
-                if event.key == pygame.K_UP:
-                    new1 = self._try_move(self.p1_pos, "N")
-                elif event.key == pygame.K_DOWN:
-                    new1 = self._try_move(self.p1_pos, "S")
-                elif event.key == pygame.K_LEFT:
-                    new1 = self._try_move(self.p1_pos, "W")
-                elif event.key == pygame.K_RIGHT:
-                    new1 = self._try_move(self.p1_pos, "E")
-
-                if new1 is not None:
-                    if new1 != self.p1_pos:
-                        self.p1_trace = self._push_trace(self.p1_trace, self.p1_pos)
-                    self.p1_pos = new1
-
-                # Player 2 — WASD
-                new2 = None
-                if event.key == pygame.K_w:
-                    new2 = self._try_move(self.p2_pos, "N")
-                elif event.key == pygame.K_s:
-                    new2 = self._try_move(self.p2_pos, "S")
-                elif event.key == pygame.K_a:
-                    new2 = self._try_move(self.p2_pos, "W")
-                elif event.key == pygame.K_d:
-                    new2 = self._try_move(self.p2_pos, "E")
-
-                if new2 is not None:
-                    if new2 != self.p2_pos:
-                        self.p2_trace = self._push_trace(self.p2_trace, self.p2_pos)
-                    self.p2_pos = new2
-
-                if new1 is not None or new2 is not None:
-                    if self.level == 2:
-                        self._collect()
-                    self._check_winner()
-
-    def _check_winner(self) -> None:
-        if self.winner is not None:
-            return
-        if self.p1_pos == self.exit:
-            self.winner = "Player 1"
-            self.winner_time_ms = self.elapsed_ms
-        elif self.p2_pos == self.exit:
-            self.winner = "Player 2"
-            self.winner_time_ms = self.elapsed_ms
-
-    # ------------------------------------------------------------------ update
-
-    def _update(self, dt_ms: int) -> None:
-        if not self.reveal_done:
-            self._update_reveal(dt_ms)
-            return
-
-        if self.winner is None:
-            self.elapsed_ms += dt_ms
-
-        # NEW: Level 3 — advance chaser along the path
-        if self.level == 3 and self.winner is None:
-            self.chaser_timer += dt_ms
-            while self.chaser_timer >= self.chaser_delay_ms:
-                self.chaser_timer -= self.chaser_delay_ms
-                if self.chaser_index < len(self.path[0]) - 1:
-                    self.chaser_index += 1
-                if self.chaser_index >= len(self.path[0]) - 1:
-                    # chaser reached exit — both players lose
-                    self.winner = "Chaser"
-                    self.winner_time_ms = self.elapsed_ms
-                    break
-
-    def _update_reveal(self, dt_ms: int) -> None:
-        """NEW: Grow the animated path line step by step, then hold briefly."""
-        path_len = len(self.path[0])
-        if self.reveal_line_index < path_len - 1:
-            self.reveal_line_timer += dt_ms
-            steps = self.reveal_line_timer // self.REVEAL_LINE_DELAY_MS
-            if steps:
-                self.reveal_line_timer %= self.REVEAL_LINE_DELAY_MS
-                self.reveal_line_index = min(
-                    self.reveal_line_index + steps, path_len - 1)
-                # NEW: Level 2 — drop collectables as head of line passes them
-                if self.level == 2:
-                    for i, cell in enumerate(self.path[0]):
-                        if i > 0 and i % 12 == 0 and i <= self.reveal_line_index:
-                            self.collectables.add((cell.x, cell.y))
-        else:
-            # line finished — wait REVEAL_HOLD_MS then start the race
-            self.reveal_hold_timer += dt_ms
-            if self.reveal_hold_timer >= self.REVEAL_HOLD_MS:
-                self.reveal_done  = True
-                self.race_started = True
-
-    # ------------------------------------------------------------------ drawing
-
-    def _draw_side_of_cell(self, surface: pygame.Surface,
-                           colour: Tuple[int, int, int],
-                           direction: str, x0: int, y0: int) -> None:
-        s, cl = self.stroke_length, self.cell_length
-        rects = {
-            "N":  (x0+s,    y0,       cl-2*s, s),
-            "NE": (x0+cl-s, y0,       s,      s),
-            "E":  (x0+cl-s, y0+s,     s,      cl-2*s),
-            "SE": (x0+cl-s, y0+cl-s,  s,      s),
-            "S":  (x0+s,    y0+cl-s,  cl-2*s, s),
-            "SW": (x0,      y0+cl-s,  s,      s),
-            "W":  (x0,      y0+s,     s,      cl-2*s),
-            "NW": (x0,      y0,       s,      s),
-        }
-        if direction in rects:
-            pygame.draw.rect(surface, colour, rects[direction])
-
-    def _draw_maze(self) -> None:
-        """Draw walls and cell fills — no path colouring during race."""
-        self.canvas.fill(self.bg_colour)
-        for row in range(self.maze.height):
-            for col in range(self.maze.width):
-                x0, y0 = self._cell_top_left(col, row)
-                cell   = self.maze.get_cell(col, row)
-                for corner in ("NE", "SE", "SW", "NW"):
-                    self._draw_side_of_cell(self.canvas, self.wall_colour,
-                                            corner, x0, y0)
-                if cell:
-                    for d in cell.walls:
-                        c = (self.wall_colour if cell.walls[d]
-                             else self.interior_colour)
-                        self._draw_side_of_cell(self.canvas, c, d, x0, y0)
-
-                if (col, row) == self.entry:
-                    fill = self.entry_colour
-                elif (col, row) == self.exit:
-                    fill = self.exit_colour
-                elif cell and cell.is_pattern:
-                    fill = self.protect_colour
-                else:
-                    fill = self.interior_colour
-
-                s = self.stroke_length
-                pygame.draw.rect(
-                    self.canvas, fill,
-                    (x0+s, y0+s, self.cell_length-2*s, self.cell_length-2*s))
-
-    def _draw_reveal_line(self) -> None:
-        """NEW: Animated thin line growing from entry to current reveal head."""
-        cells = self.path[0]
-        if len(cells) < 2:
-            return
-        pts = [self._cell_center(c.x, c.y)
-               for c in cells[:self.reveal_line_index + 1]]
-        if len(pts) >= 2:
-            # glow layer (wider, dimmer)
-            pygame.draw.lines(
-                self.canvas,
-                self._dim(self.path_colour, 100),
-                False, pts,
-                max(2, self.cell_length // 5))
-            # bright core
-            pygame.draw.lines(
-                self.canvas,
-                self.path_colour,
-                False, pts,
-                max(1, self.cell_length // 8))
-        # white dot at the leading head
-        head = pts[-1]
-        pygame.draw.circle(self.canvas, (255, 255, 255), head,
-                           max(2, self.cell_length // 5))
-
-    def _draw_trace(self, trace: List[Tuple[int, int]],
-                    colour: Tuple[int, int, int], offset_x: int) -> None:
-        """NEW: Thin fading line following the player, offset left or right."""
-        if len(trace) < 2:
-            return
-        n = len(trace)
-        for i in range(n - 1):
-            alpha = int(30 + 150 * (i + 1) / n)   # fades from old to new
-            c  = self._dim(colour, alpha)
-            p0 = (self._cell_center(*trace[i])[0]   + offset_x,
-                  self._cell_center(*trace[i])[1])
-            p1 = (self._cell_center(*trace[i+1])[0] + offset_x,
-                  self._cell_center(*trace[i+1])[1])
-            pygame.draw.line(self.canvas, c, p0, p1,
-                             max(1, self.cell_length // 8))
-
-    def _draw_collectables(self) -> None:
-        """NEW: Small upward triangles at each collectable position (Level 2)."""
-        r = max(3, self.cell_length // 5)
-        for (cx, cy) in self.collectables:
-            px, py = self._cell_center(cx, cy)
-            tri = [(px, py - r), (px - r, py + r), (px + r, py + r)]
-            pygame.draw.polygon(self.canvas, self.path_colour, tri)
-            pygame.draw.polygon(self.canvas, (255, 255, 255), tri, 1)
-
-    def _draw_chaser(self) -> None:
-        """NEW: Pulsing red dot that walks the solution path (Level 3)."""
-        if self.chaser_index >= len(self.path[0]):
-            return
-        cell = self.path[0][self.chaser_index]
-        cx, cy = self._cell_center(cell.x, cell.y)
-        r = max(3, self.cell_length // 3)
-        # pulse brightness over 600 ms cycle
-        pulse  = abs((self.elapsed_ms % 600) - 300) / 300.0
-        bright = int(180 + 75 * pulse)
-        pygame.draw.circle(self.canvas, (bright, 30, 30),  (cx, cy), r)
-        pygame.draw.circle(self.canvas, (255, 80, 80), (cx, cy), max(1, r//2))
-
-    def _draw_players(self) -> None:
-        """NEW: Circles for both players; split half-half when on same cell."""
-        import math
-        r = max(3, self.cell_length // 3)
-
-        if self.p1_pos == self.p2_pos:
-            # NEW: vertically split circle — left=P1, right=P2
-            cx, cy = self._cell_center(*self.p1_pos)
-            # left half polygon (P1)
-            left_pts = ([(cx, cy - r)] +
-                        [(cx + int(r * math.cos(a)),
-                          cy - int(r * math.sin(a)))
-                         for a in [math.pi * i / 8 for i in range(8, 17)]] +
-                        [(cx, cy + r)])
-            # right half polygon (P2)
-            right_pts = ([(cx, cy - r)] +
-                         [(cx + int(r * math.cos(a)),
-                           cy - int(r * math.sin(a)))
-                          for a in [math.pi * i / 8 for i in range(0, 9)]] +
-                         [(cx, cy + r)])
-            pygame.draw.polygon(self.canvas, self.p1_colour, left_pts)
-            pygame.draw.polygon(self.canvas, self.p2_colour, right_pts)
-            # thin white dividing line and outline
-            pygame.draw.line(self.canvas, (255, 255, 255),
-                             (cx, cy - r), (cx, cy + r), 1)
-            pygame.draw.circle(self.canvas, (255, 255, 255), (cx, cy), r, 1)
-        else:
-            for pos, colour in ((self.p1_pos, self.p1_colour),
-                                (self.p2_pos, self.p2_colour)):
-                cx, cy = self._cell_center(*pos)
-                pygame.draw.circle(self.canvas, colour, (cx, cy), r)
-                pygame.draw.circle(self.canvas, (255, 255, 255), (cx, cy), r, 1)
-
-    def _draw_panel(self) -> None:
-        """Right-side info panel: level name, timer, legend, level extras."""
-        self.info_canvas.fill((28, 28, 46))
-        x, y = 20, 30
-
-        level_names = {1: "Nordic Forest", 2: "Synthwave", 3: "Tokyo Night"}
-        title = self.font_title.render(
-            f"Lvl {self.level} — {level_names.get(self.level, '')}", True,
-            self.text_colour)
-        self.info_canvas.blit(title, (x, y));  y += 46
-
-        size_lbl = self.font.render(
-            f"{self.maze.width} x {self.maze.height}", True, self.text_colour)
-        self.info_canvas.blit(size_lbl, (x, y));  y += 34
-
-        pygame.draw.line(self.info_canvas, (80, 80, 100),
-                         (x, y), (self.info_width - x, y), 1);  y += 16
-
-        # timer or reveal progress bar
-        if not self.reveal_done:
-            pct   = self.reveal_line_index / max(1, len(self.path[0]) - 1)
-            bar_w = self.info_width - 2 * x
-            pygame.draw.rect(self.info_canvas, (60, 60, 80),
-                             (x, y, bar_w, 8))
-            pygame.draw.rect(self.info_canvas, self.path_colour,
-                             (x, y, int(bar_w * pct), 8))
-            y += 20
-            self.info_canvas.blit(
-                self.font.render("Memorize the path!", True, self.path_colour),
-                (x, y));  y += 30
-        else:
-            secs   = self.elapsed_ms / 1000.0
-            t_surf = self.font_title.render(f"{secs:0.1f}s", True,
-                                            self.text_colour)
-            self.info_canvas.blit(t_surf, (x, y));  y += 46
-
-        # player legend dots
-        pygame.draw.circle(self.info_canvas, self.p1_colour, (x+8, y+10), 8)
-        self.info_canvas.blit(
-            self.font.render("P1  (arrows)", True, self.text_colour), (x+24, y))
-        y += 30
-        pygame.draw.circle(self.info_canvas, self.p2_colour, (x+8, y+10), 8)
-        self.info_canvas.blit(
-            self.font.render("P2  (WASD)", True, self.text_colour), (x+24, y))
-        y += 36
-
-        # NEW: Level 2 — collectable scoreboard
-        if self.level == 2:
-            pygame.draw.line(self.info_canvas, (80, 80, 100),
-                             (x, y), (self.info_width - x, y), 1);  y += 12
-            self.info_canvas.blit(
-                self.font.render(f"P1 collected: {self.p1_collected}",
-                                 True, self.p1_colour), (x, y));  y += 24
-            self.info_canvas.blit(
-                self.font.render(f"P2 collected: {self.p2_collected}",
-                                 True, self.p2_colour), (x, y));  y += 24
-            self.info_canvas.blit(
-                self.font.render(f"Remaining: {len(self.collectables)}",
-                                 True, self.text_colour), (x, y));  y += 28
-
-        # NEW: Level 3 — chaser progress bar
-        if self.level == 3 and self.reveal_done:
-            pygame.draw.line(self.info_canvas, (80, 80, 100),
-                             (x, y), (self.info_width - x, y), 1);  y += 12
-            pct   = self.chaser_index / max(1, len(self.path[0]) - 1)
-            bar_w = self.info_width - 2 * x
-            pygame.draw.rect(self.info_canvas, (60, 30, 30),
-                             (x, y, bar_w, 10))
-            pygame.draw.rect(self.info_canvas, (220, 50, 50),
-                             (x, y, int(bar_w * pct), 10))
-            y += 14
-            self.info_canvas.blit(
-                self.font.render("Chaser progress", True, (220, 80, 80)),
-                (x, y));  y += 26
-
-        # winner / loss screen
-        if self.winner is not None:
-            pygame.draw.line(self.info_canvas, (80, 80, 100),
-                             (x, y), (self.info_width - x, y), 1);  y += 14
-            if self.winner == "Chaser":
-                msg1, msg2, col = ("Chaser wins!",
-                                   "Both players lose!", (220, 50, 50))
-            else:
-                msg1 = f"{self.winner} wins!"
-                msg2 = f"Time: {self.winner_time_ms / 1000.0:0.1f}s"
-                col  = (249, 240, 2)
-            self.info_canvas.blit(
-                self.font_title.render(msg1, True, col), (x, y));  y += 38
-            self.info_canvas.blit(
-                self.font.render(msg2, True, self.text_colour), (x, y));  y += 34
-            self.info_canvas.blit(
-                self.font.render("[ENTER] next level", True, (136, 192, 208)),
-                (x, y));  y += 24
-            self.info_canvas.blit(
-                self.font.render("[ESC] menu", True, (136, 192, 208)), (x, y))
-
-        self.screen.blit(self.info_canvas, (self.maze_area_width, 0))
-
-    def _render(self) -> None:
-        self._draw_maze()
-        if not self.reveal_done:
-            # NEW: during reveal phase, only show the animated line
-            self._draw_reveal_line()
-        else:
-            # NEW: race phase — traces, then level extras, then avatars on top
-            self._draw_trace(self.p1_trace, self.p1_colour, -self.TRACE_OFFSET)
-            self._draw_trace(self.p2_trace, self.p2_colour,  self.TRACE_OFFSET)
-            if self.level == 2:
-                self._draw_collectables()
-            if self.level == 3:
-                self._draw_chaser()
-            self._draw_players()
-        self.screen.blit(self.canvas, (0, 0))
-        self._draw_panel()
-
-    # ------------------------------------------------------------------ main loop
-
-    def run(self) -> Optional[str]:
-        """
-        Run the race until someone wins or chaser reaches exit (L3).
-
-        Returns:
-            "next_level" -- advance to next level.
-            "menu"       -- return to main menu.
-            None         -- window closed.
-        """
-        while self.running:
-            self._handle_events()
-            dt = self.clock.tick(60)
-            self._update(dt)
-            self._render()
-            pygame.display.flip()
-
-        return self.result

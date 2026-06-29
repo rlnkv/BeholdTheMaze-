@@ -4,19 +4,16 @@ from typing import List, Tuple, Optional
 from maze import Maze, Cell, add_42_pattern, HuntAndKillGenerator
 from path_finder import PathFinder
 from renderer import Renderer
+from maze_utils import is_on_pattern, safe_random_cell, safe_random_entry_exit  # NEW: shared helpers, replace local copies below
+from render_utils import load_font as _shared_load_font  # NEW: shared font loader
 import os
 
 def _load_font(size: int) -> pygame.font.Font:
-    _HERE = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(_HERE, "DejaVuSans.ttf"),
-        os.path.join(_HERE, "dejavu-sans", "DejaVuSans.ttf"),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return pygame.font.Font(path, size)
-    # nothing found — pygame's built-in font always works
-    return pygame.font.SysFont(None, size)
+    """Thin wrapper so the rest of this file doesn't change: loads a
+    font using the shared render_utils helper instead of its own
+    duplicated candidate-list logic."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return _shared_load_font(size, here)
 
 #  Colors used in the menu (same dark theme as renderer)
 BG_COLOR        = (46,  52,  64)   # dark background
@@ -324,26 +321,10 @@ class MenuScreen:
             return random.randint(lo, hi)
         return int(value.strip())
 
-    def _is_on_pattern(self, maze: Maze, x: int, y: int) -> bool:
-        """
-        Return True if cell (x, y) is a pattern ("42") cell.
-        Used to reject entry/exit points placed on the pattern.
-        """
-        cell = maze.get_cell(x, y)
-        return cell is not None and cell.is_pattern
-
-    # keep picking random coordinates until we land off the 42 pattern.
-    # Simple loop — worst case a handful of retries, never infinite because
-    # the pattern occupies only ~14 cells out of hundreds.
-    def _safe_random_cell(self, test_maze: Maze, w: int, h: int) -> Tuple[int, int]:
-        """
-        Return a random (x, y) that is inside the maze and not on the pattern.
-        """
-        while True:
-            x = random.randint(0, w - 1)
-            y = random.randint(0, h - 1)
-            if not self._is_on_pattern(test_maze, x, y):
-                return x, y
+    # NEW: _is_on_pattern and _safe_random_cell used to be duplicated
+    # here as methods. They now live in maze_utils.py (imported at the
+    # top of this file as is_on_pattern / safe_random_cell) so menu.py,
+    # renderer.py, and challenge/runner.py all share one copy.
 
     def _validate_custom_inputs(self) -> bool:
         """
@@ -404,10 +385,10 @@ class MenuScreen:
         entry_was_random = self.custom_values[2].strip() in (" ", "") or                            self.custom_values[3].strip() in ("-", "")
         exit_was_random  = self.custom_values[4].strip() in (" ", "") or                            self.custom_values[5].strip() in ("-", "")
 
-        if self._is_on_pattern(test_maze, ex, ey):
+        if is_on_pattern(test_maze, ex, ey):
             if entry_was_random:
                 # silently pick again until off-pattern
-                ex, ey = self._safe_random_cell(test_maze, w, h)
+                ex, ey = safe_random_cell(test_maze, w, h)
             else:
                 self.custom_error = (
                     f"Entry ({ex},{ey}) is on the 42 pattern. "
@@ -415,10 +396,10 @@ class MenuScreen:
                 )
                 return False
 
-        if self._is_on_pattern(test_maze, fx, fy):
+        if is_on_pattern(test_maze, fx, fy):
             if exit_was_random:
                 # silently pick again until off-pattern
-                fx, fy = self._safe_random_cell(test_maze, w, h)
+                fx, fy = safe_random_cell(test_maze, w, h)
             else:
                 self.custom_error = (
                     f"Exit ({fx},{fy}) is on the 42 pattern. "
@@ -428,7 +409,7 @@ class MenuScreen:
 
         # guard: entry and exit still must differ after any re-rolls
         while (ex, ey) == (fx, fy):
-            fx, fy = self._safe_random_cell(test_maze, w, h)
+            fx, fy = safe_random_cell(test_maze, w, h)
 
         # write resolved values back so user sees what was chosen
         self.custom_values[0] = str(w)
@@ -478,14 +459,12 @@ class MenuScreen:
                 w    = random.randint(15, 30)
                 h    = random.randint(10, 20)
                 seed = random.randint(1, 10000)
-                # _safe_random_cell retries until entry/exit land off the 42
-                # pattern, so they are never placed on a blocked cell.
+                # NEW: safe_random_entry_exit retries until entry/exit
+                # land off the 42 pattern and differ from each other,
+                # so they are never placed on a blocked cell.
                 test_maze = Maze(w, h)
                 add_42_pattern(test_maze)
-                entry = self._safe_random_cell(test_maze, w, h)
-                exit_ = self._safe_random_cell(test_maze, w, h)
-                while exit_ == entry:
-                    exit_ = self._safe_random_cell(test_maze, w, h)
+                entry, exit_ = safe_random_entry_exit(test_maze, w, h)
                 self.result  = (w, h, entry, exit_, seed, True)
                 self.running = False
 

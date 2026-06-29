@@ -94,9 +94,22 @@ same seed - same maze every time, random seed - random maze
 
 
 class HuntAndKillGenerator:
+    """
+    Uses its own private random.Random instance (self._rng) instead of
+    the global random.seed(). That matters because the menu's
+    background maze always uses a fixed seed (42); if that reseeded
+    the shared/global random module, it would silently make the NEXT
+    "random" pick anywhere else in the program (e.g. "pick a random
+    seed for the next challenge maze") deterministic too — which is
+    why mazes used to repeat. Each generator now keeps its own
+    separate shuffle-machine, so generating one maze never affects
+    randomness anywhere else.
+
+    same seed - same maze every time, random seed - random maze.
+    """
+
     def __init__(self, seed: Optional[int] = None) -> None:
-        if seed is not None:
-            random.seed(seed)
+        self._rng = random.Random(seed)
 
     """ Generate method - has an maze (parameters of maze) as an attribute.
     We start at the left upper corner and start randomly move through maze,
@@ -123,7 +136,7 @@ class HuntAndKillGenerator:
             ]
 
             if unvisited_neighbors:
-                random.shuffle(unvisited_neighbors)
+                self._rng.shuffle(unvisited_neighbors)
 
                 moved = False
 
@@ -170,8 +183,8 @@ class HuntAndKillGenerator:
         if not candidates:
             return None
 
-        cell, visited_neighbors = random.choice(candidates)
-        direction, neighbor = random.choice(visited_neighbors)
+        cell, visited_neighbors = self._rng.choice(candidates)
+        direction, neighbor = self._rng.choice(visited_neighbors)
         maze.remove_wall(cell, neighbor, direction)
         cell.visited = True
         return cell

@@ -374,37 +374,53 @@ class ChallengeRenderer:
 
     def _draw_trace(self, trace: List[Tuple[int, int]],
                      colour: Tuple[int, int, int], offset_x: int) -> None:
-        """Thin fading line following the player, offset left or right."""
+        """
+        Thin fading line following the player, offset left or right.
+
+        The trail tapers — wide where it touches the player's (or
+        chaser's) circle, narrow at the far tip — like a comet's tail.
+        trace[-1] is the most recent past position (closest to the
+        current position), trace[0] is the oldest.
+        """
         if len(trace) < 2:
             return
         n = len(trace)
+        max_width = max(2, self.cell_length // 6)   # width nearest the head
+        min_width = 1                                # width at the far tip
         for i in range(n - 1):
-            alpha = int(30 + 150 * (i + 1) / n)   # fades from old to new
+            fade_t = (i + 1) / n   # 0 = oldest segment, 1 = newest (closest to head)
+            alpha = int(30 + 150 * fade_t)   # fades from old to new
             c = self._dim(colour, alpha)
+            width = max(min_width, int(min_width + (max_width - min_width) * fade_t))
             p0 = (self._cell_center(*trace[i])[0] + offset_x,
                   self._cell_center(*trace[i])[1])
             p1 = (self._cell_center(*trace[i + 1])[0] + offset_x,
                   self._cell_center(*trace[i + 1])[1])
-            pygame.draw.line(self.canvas, c, p0, p1,
-                              max(1, self.cell_length // 8))
+            pygame.draw.line(self.canvas, c, p0, p1, width)
 
     def _draw_players(self) -> None:
-        """Circles for both players; split half-half when on same cell."""
+        """
+        Circles for both players; split half-half when on same cell.
+
+        Each half is a true semicircle arc walked from top to bottom
+        on one side of the vertical diameter, then mirrored for the
+        other half, so the two halves meet cleanly without folding
+        back on themselves.
+        """
         r = max(3, self.cell_length // 3)
 
         if self.p1_pos == self.p2_pos:
-            # vertically split circle — left=P1, right=P2
             cx, cy = self._cell_center(*self.p1_pos)
-            left_pts = ([(cx, cy - r)] +
-                        [(cx + int(r * math.cos(a)),
-                          cy - int(r * math.sin(a)))
-                         for a in [math.pi * i / 8 for i in range(8, 17)]] +
-                        [(cx, cy + r)])
-            right_pts = ([(cx, cy - r)] +
-                         [(cx + int(r * math.cos(a)),
-                           cy - int(r * math.sin(a)))
-                          for a in [math.pi * i / 8 for i in range(0, 9)]] +
-                         [(cx, cy + r)])
+            steps = 16
+            arc = [
+                (cx - int(r * math.sin(math.pi * i / steps)),
+                 cy - int(r * math.cos(math.pi * i / steps)))
+                for i in range(steps + 1)
+            ]  # (cx, cy-r) down the LEFT side to (cx, cy+r)
+
+            left_pts = arc
+            right_pts = [(2 * cx - x, y) for x, y in arc]  # mirror -> bulges right
+
             pygame.draw.polygon(self.canvas, self.p1_colour, left_pts)
             pygame.draw.polygon(self.canvas, self.p2_colour, right_pts)
             pygame.draw.line(self.canvas, (255, 255, 255),

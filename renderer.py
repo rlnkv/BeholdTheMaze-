@@ -67,6 +67,77 @@ PALETTES = [
         "pattern":  (136, 192, 208),
         "interior": (46, 52, 64),
     },
+    # ── Level 4 ──────────────────────────────────────────────────────────
+    # "Midnight Vault" — cold gunmetal duel aesthetic.
+    #
+    # Concept: a high-security vault lit by cold cathode tubes.
+    # The near-black bg and steel-blue walls feel like locked blast
+    # doors; the deep teal interior gives the violet/gold player
+    # colours maximum pop (both warm hues against a cold ground).
+    # Electric cyan entry, hot amber exit — unmissable opposites.
+    # Path in glacial white-blue so the reveal animation feels like
+    # a laser etching the route into metal.
+    {
+        "name":     "Midnight Vault",
+        "bg":       (8,  12, 20),       # near-black with a blue tint
+        "wall":     (48, 72, 108),      # steel-blue — reads as cold metal
+        "entry":    (0,  220, 200),     # electric cyan
+        "exit":     (255, 165, 0),      # hot amber — warms the cold palette
+        "path":     (180, 210, 255),    # glacial blue-white laser line
+        "pattern":  (160, 30,  60),     # deep crimson — the 42 feels forbidden
+        "interior": (14, 28,  48),      # very dark teal — players pop hard
+    },
+    # ── Level 5 ──────────────────────────────────────────────────────────
+    # "Ember & Obsidian" — warm tension, organic urgency.
+    #
+    # Concept: polished black volcanic glass lit by dying embers.
+    # The warm dark-brown bg reads as obsidian; the antique-gold
+    # walls feel precious and fragile — matching the "stay in sync
+    # or lose it" tension. Deep charcoal interior is neutral enough
+    # that the red desync warning borders and the split-circle
+    # stripe fills absolutely command attention.
+    # Cool mint entry contrasts the warmth; rose-gold exit feels
+    # like the reward at the end of a hard cooperative run.
+    {
+        "name":     "Ember & Obsidian",
+        "bg":       (15, 10,  8),       # near-black, warm brown tint
+        "wall":     (160, 110, 40),     # antique gold — precious, warm
+        "entry":    (80,  210, 160),    # cool mint — contrasts the warmth
+        "exit":     (220, 130, 100),    # rose-gold — reward at journey's end
+        "path":     (255, 190, 60),     # molten amber reveal line
+        "pattern":  (180, 50,  20),     # ember-red — 42 glows like hot coals
+        "interior": (30,  22,  18),     # dark charcoal — warning reds pop here
+    },
+    # ── Level 6 ──────────────────────────────────────────────────────────
+    # "Toxic Core" — final boss, biohazard danger zone.
+    #
+    # Concept: a contaminated reactor core lit by radioactive green.
+    # Acid-green walls read like glowing circuit traces or hazard
+    # tubing; near-black bg with the faintest green tint makes the
+    # maze feel poisonous and claustrophobic — exactly right for
+    # the hardest level.
+    #
+    # Why this works for level 6's mechanics:
+    #   - Very dark interior (8, 18, 8): the violet/gold stripe fills
+    #     and the red chaser trail have zero competition — they command
+    #     the eye immediately.
+    #   - Acid green walls are bright enough to read clearly but don't
+    #     bleed into the interior value.
+    #   - Hot magenta exit is the only warm-pink in the entire palette
+    #     set — completely unmissable and unlike any other level's exit.
+    #   - Electric lime entry is cold and clinical, contrasting the
+    #     magenta exit strongly so players always know which is which.
+    #   - Deep crimson pattern: the "42" cells glow like warning lights.
+    {
+        "name":     "Toxic Core",
+        "bg":       (4,  10,  4),       # near-black, faint green tint
+        "wall":     (18, 80,  35),      # muted olive green — present but not glaring
+        "entry":    (100, 200, 80),     # soft lime — readable without burning
+        "exit":     (200, 30,  110),    # deep magenta — still the most vivid thing
+        "path":     (60,  160, 100),    # soft teal-green reveal line
+        "pattern":  (130, 18,  18),     # deep crimson — warning-light red
+        "interior": (8,   18,  8),      # near-black green — all overlays pop hard
+    },
 ]
 
 

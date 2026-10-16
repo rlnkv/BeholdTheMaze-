@@ -1,119 +1,66 @@
-from typing import List, Tuple, Set, Dict
-from maze import Maze, Cell
+"""
+BFS pathfinder for the maze.
+"""
+
+import collections
+from typing import Dict, List, Optional, Set, Tuple
+
+from maze import Cell, Maze, DIRECTIONS
 
 
 class PathFinder:
-    """
-    Finds a path in a maze using BFS search.
+    """Finds the shortest path between two cells using breadth-first search."""
 
-    Implements breadth-first search to explore reachable cells and
-    reconstruct a path from start to end.
-
-    Attributes:
-    queue (List[Cell]): BFS exploration queue.
-    visited (Set[Cell]): Set of visited cells.
-    parents (Dict[Cell, Tuple[str, Cell] | None]): Mapping of
-    each cell to its parent and direction.
-    maze (Maze): Maze instance being processed.
-    """
-    def __init__(self, maze: Maze):
-        """Initialize the path finder with a maze."""
+    def __init__(self, maze: Maze) -> None:
         self.maze = maze
-        self.queue: List[Cell] = []
-        self.visited: Set[Cell] = set()
-        self.parents: Dict[Cell, Tuple[str, Cell] | None] = {}
 
-    def _get_neighbors(self, cell: Cell) -> List[Tuple[str, Cell | None]]:
+    def find_path(
+        self, start: Optional[Cell], end: Optional[Cell]
+    ) -> Tuple[List[Cell], List[str]]:
         """
-        Get accessible neighboring cells from the current cell.
-
-        Args:
-        cell (Cell): Current cell.
-
-        Returns:
-        List[Tuple[str, Cell | None]]: Direction and neighbor pairs.
-        """
-        result = []
-        for direction in cell.walls:
-            if cell.walls[direction] is False:
-                if direction == "N":
-                    neighbor_x = cell.x
-                    neighbor_y = cell.y - 1
-                if direction == "E":
-                    neighbor_x = cell.x + 1
-                    neighbor_y = cell.y
-                if direction == "S":
-                    neighbor_x = cell.x
-                    neighbor_y = cell.y + 1
-                if direction == "W":
-                    neighbor_x = cell.x - 1
-                    neighbor_y = cell.y
-                if (neighbor_x >= 0 and neighbor_x < self.maze.width and
-                   neighbor_y >= 0 and neighbor_y < self.maze.height):
-                    result.append((direction, self.maze.get_cell(neighbor_x,
-                                                                 neighbor_y)))
-        return result
-
-    def _bfs(self, start: Cell, end: Cell) -> None:
-        """
-        Perform Breadth-first search to explore the maze.
-
-        Args:
-        start (Cell): Start cell.
-        end (Cell): End cell.
-        """
-        self.queue = [start]
-        self.visited = {start}
-        self.parents = {start: None}
-
-        while self.queue:
-            current = self.queue.pop(0)
-
-            if (current.x == end.x
-               and current.y == end.y):
-                break
-
-            for direction, neighbor in self._get_neighbors(current):
-                if neighbor is None:
-                    continue
-                if neighbor not in self.visited:
-                    self.visited.add(neighbor)
-                    self.parents[neighbor] = (direction, current)
-                    self.queue.append(neighbor)
-
-    def find_path(self, start: Cell | None,
-                  end: Cell | None) -> Tuple[List[Cell], List[str]]:
-        """
-        Find a path from start to end in the maze.
-
-        Args:
-        start (Cell | None): Start cell.
-        end (Cell | None): End cell.
-
-        Returns:
-        Tuple[List[Cell], List[str]]: Path and directions.
+        Return (cells, directions) for the shortest path from start to end.
+        Both lists are empty if no path exists or either argument is None.
         """
         if not start or not end:
-            return ([], [])
+            return [], []
 
-        self._bfs(start, end)
+        parents: Dict[Cell, Optional[Tuple[str, Cell]]] = {start: None}
+        queue: collections.deque[Cell] = collections.deque([start])
 
-        if end not in self.parents:
-            return ([], [])
-
-        path = []
-        directions = []
-        current = end
-
-        while current is not None:
-            path.append(current)
-            parent_info = self.parents[current]
-            if parent_info is None:
+        while queue:
+            current = queue.popleft()
+            if current is end:
                 break
-            direction, parent = parent_info
+            for direction, neighbor in self._open_neighbors(current):
+                if neighbor not in parents:
+                    parents[neighbor] = (direction, current)
+                    queue.append(neighbor)
+
+        if end not in parents:
+            return [], []
+
+        # Reconstruct path by walking back from end to start.
+        path: List[Cell] = []
+        directions: List[str] = []
+        node: Optional[Cell] = end
+        while node is not None:
+            path.append(node)
+            info = parents[node]
+            if info is None:
+                break
+            direction, node = info
             directions.append(direction)
-            current = parent
 
         path.reverse()
         directions.reverse()
         return path, directions
+
+    def _open_neighbors(self, cell: Cell) -> List[Tuple[str, Cell]]:
+        """Return (direction, neighbor) pairs for walls that have been removed."""
+        result = []
+        for direction, (dx, dy) in DIRECTIONS.items():
+            if not cell.walls[direction]:
+                neighbor = self.maze.get_cell(cell.x + dx, cell.y + dy)
+                if neighbor is not None:
+                    result.append((direction, neighbor))
+        return result

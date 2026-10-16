@@ -1,25 +1,5 @@
 """
-NEW FILE (this iteration).
-
-This is the shared "race engine" for Challenge Mode. It used to be
-one giant ChallengeRenderer class inside renderer.py, mixing
-"things every level needs" (player movement, the reveal-line
-animation, drawing walls) with "things only ONE level needs"
-(collectable triangles for level 2, the chasing red dot for level 3).
-
-ELI5: think of this class like a car CHASSIS — wheels, engine,
-seats, steering wheel. Every car (every level) is built on top of
-this same chassis. Level files (level1.py, level2.py, level3.py)
-just bolt on their own extra parts by filling in a few "hook"
-methods:
-
-    _on_update(dt_ms)      -- anything extra to update each frame
-    _on_collect()          -- called when a player steps on a cell
-    _on_draw_extras()      -- anything extra to draw on the maze
-    _on_panel_extras(y)    -- anything extra to draw in the side panel
-
-If a level doesn't need one of these, it just doesn't override it,
-and the chassis default (do nothing) is used.
+Shared base class for all Challenge Mode levels.
 """
 
 import math
@@ -27,6 +7,17 @@ import os
 from typing import List, Optional, Tuple
 
 import pygame
+
+try:
+    import game_sounds as sounds
+except ImportError:
+    # No sounds module found — create a silent stand-in so the rest
+    # of the code can call sounds.play() without any changes.
+    class sounds:  # type: ignore
+        @staticmethod
+        def init() -> None: pass
+        @staticmethod
+        def play(name: str) -> None: pass
 
 from maze import Cell, Maze
 from render_utils import (
@@ -72,8 +63,8 @@ class ChallengeRenderer:
     P2_COLOUR = (220, 175,  30)   # warm gold
 
     # fading trace settings
-    TRACE_LEN = 5      # cells kept in trail
-    TRACE_OFFSET = 4   # px left/right offset from cell center
+    TRACE_LEN    = 8   # footprints kept in trail (more than lines so the path reads)
+    TRACE_OFFSET = 4   # px left/right offset from cell center (still used for chaser)
 
     def __init__(self,
                  maze: Maze,
@@ -102,8 +93,7 @@ class ChallengeRenderer:
                                             self.window_height))
 
         here = os.path.dirname(os.path.abspath(__file__))
-        self.font = load_font(20, here)
-        self.font_big = load_font(40, here)
+        self.font       = load_font(20, here)
         self.font_title = load_font(28, here)
 
         # pick palette by level
@@ -140,6 +130,11 @@ class ChallengeRenderer:
         self.winner: Optional[str] = None
         self.winner_time_ms = 0
 
+        # both-players finish tracking — used by the default _check_winner
+        # (all levels) and by the waiting indicator in the panel
+        self.p1_finished = False
+        self.p2_finished = False
+
         self.running = True
         self.result: Optional[str] = None
         self.clock = pygame.time.Clock()
@@ -171,12 +166,24 @@ class ChallengeRenderer:
 
     # ------------------------------------------------------------ movement
 
-    def _try_move(self, pos: Tuple[int, int], direction: str) -> Tuple[int, int]:
+    def _try_move(self, pos: Tuple[int, int], direction: str,
+                  player: str = "") -> Tuple[int, int]:
+        """
+        Attempt to move from pos in direction. Returns the new position,
+        or the original pos if blocked by a maze wall OR by the
+        _is_move_blocked hook (used by level 4 for stripe blocking).
+
+        `player` is "p1" or "p2" — passed to the hook so a subclass
+        can block a specific player without touching movement logic here.
+        """
         cell = self.maze.get_cell(*pos)
         if cell is None or cell.walls[direction]:
             return pos
         dx, dy = {"N": (0, -1), "S": (0, 1), "E": (1, 0), "W": (-1, 0)}[direction]
-        return (pos[0] + dx, pos[1] + dy)
+        new_pos = (pos[0] + dx, pos[1] + dy)
+        if self._is_move_blocked(player, new_pos):
+            return pos
+        return new_pos
 
     def _push_trace(self, trace: List, pos: Tuple[int, int]) -> List:
         """Append pos, keep only last TRACE_LEN entries."""
@@ -188,7 +195,7 @@ class ChallengeRenderer:
         """Hook: extra per-frame update logic. Default: nothing."""
 
     def _on_collect(self) -> None:
-        """Hook: called after a player moves. Default: nothing."""
+        """Hook: called after any player moves. Default: nothing."""
 
     def _on_draw_extras(self) -> None:
         """Hook: extra things to draw on the maze canvas. Default: nothing."""
@@ -200,6 +207,35 @@ class ChallengeRenderer:
         next panel section should start. Default: no change.
         """
         return y
+
+    def _is_move_blocked(self, player: str, target_pos: Tuple[int, int]) -> bool:
+        """
+        Hook: return True to prevent `player` ("p1" or "p2") from
+        moving to target_pos. Default: nothing is blocked.
+        Level 4 overrides this to enforce stripe ownership rules.
+        """
+        return False
+
+    def _check_winner(self) -> None:
+        """
+        Default win condition (all levels): BOTH players must reach
+        the exit. The first to arrive waits; the clock stops when the
+        second one arrives too.
+
+        Level 3 still overrides this to add the Chaser loss condition
+        on top. Level 4's override was identical to this and is now
+        removed — it uses this default directly.
+        """
+        if self.winner is not None:
+            return
+        if self.p1_pos == self.exit:
+            self.p1_finished = True
+        if self.p2_pos == self.exit:
+            self.p2_finished = True
+        if self.p1_finished and self.p2_finished:
+            self.winner = "Both players"
+            self.winner_time_ms = self.elapsed_ms
+            sounds.play("finish")
 
     # ------------------------------------------------------------ events
 
@@ -215,6 +251,12 @@ class ChallengeRenderer:
                     self.result = "menu"
                     continue
 
+                if event.key == pygame.K_0:
+                    # Debug shortcut: skip straight to the next level.
+                    self.running = False
+                    self.result = "next_level"
+                    continue
+
                 if self.winner is not None:
                     if event.key == pygame.K_RETURN:
                         self.running = False
@@ -224,51 +266,36 @@ class ChallengeRenderer:
                 if not self.race_started:
                     continue
 
-                # Player 1 — arrow keys
-                new1 = None
-                if event.key == pygame.K_UP:
-                    new1 = self._try_move(self.p1_pos, "N")
-                elif event.key == pygame.K_DOWN:
-                    new1 = self._try_move(self.p1_pos, "S")
-                elif event.key == pygame.K_LEFT:
-                    new1 = self._try_move(self.p1_pos, "W")
-                elif event.key == pygame.K_RIGHT:
-                    new1 = self._try_move(self.p1_pos, "E")
+                # Map keys -> (player_id, direction) for both players.
+                KEY_MAP = {
+                    pygame.K_UP:    ("p1", "N"),
+                    pygame.K_DOWN:  ("p1", "S"),
+                    pygame.K_LEFT:  ("p1", "W"),
+                    pygame.K_RIGHT: ("p1", "E"),
+                    pygame.K_w:     ("p2", "N"),
+                    pygame.K_s:     ("p2", "S"),
+                    pygame.K_a:     ("p2", "W"),
+                    pygame.K_d:     ("p2", "E"),
+                }
+                if event.key not in KEY_MAP:
+                    continue
 
-                if new1 is not None:
-                    if new1 != self.p1_pos:
+                player, direction = KEY_MAP[event.key]
+                if player == "p1":
+                    new_pos = self._try_move(self.p1_pos, direction, "p1")
+                    if new_pos != self.p1_pos:
                         self.p1_trace = self._push_trace(self.p1_trace, self.p1_pos)
-                    self.p1_pos = new1
-
-                # Player 2 — WASD
-                new2 = None
-                if event.key == pygame.K_w:
-                    new2 = self._try_move(self.p2_pos, "N")
-                elif event.key == pygame.K_s:
-                    new2 = self._try_move(self.p2_pos, "S")
-                elif event.key == pygame.K_a:
-                    new2 = self._try_move(self.p2_pos, "W")
-                elif event.key == pygame.K_d:
-                    new2 = self._try_move(self.p2_pos, "E")
-
-                if new2 is not None:
-                    if new2 != self.p2_pos:
+                        sounds.play("step_p1")
+                    self.p1_pos = new_pos
+                else:
+                    new_pos = self._try_move(self.p2_pos, direction, "p2")
+                    if new_pos != self.p2_pos:
                         self.p2_trace = self._push_trace(self.p2_trace, self.p2_pos)
-                    self.p2_pos = new2
+                        sounds.play("step_p2")
+                    self.p2_pos = new_pos
 
-                if new1 is not None or new2 is not None:
-                    self._on_collect()
-                    self._check_winner()
-
-    def _check_winner(self) -> None:
-        if self.winner is not None:
-            return
-        if self.p1_pos == self.exit:
-            self.winner = "Player 1"
-            self.winner_time_ms = self.elapsed_ms
-        elif self.p2_pos == self.exit:
-            self.winner = "Player 2"
-            self.winner_time_ms = self.elapsed_ms
+                self._on_collect()
+                self._check_winner()
 
     # ------------------------------------------------------------ update
 
@@ -372,31 +399,94 @@ class ChallengeRenderer:
         pygame.draw.circle(self.canvas, (255, 255, 255), head,
                             max(2, self.cell_length // 5))
 
-    def _draw_trace(self, trace: List[Tuple[int, int]],
-                     colour: Tuple[int, int, int], offset_x: int) -> None:
-        """
-        Thin fading line following the player, offset left or right.
+    @staticmethod
+    def _travel_direction(from_pos: Tuple[int, int],
+                          to_pos: Tuple[int, int]) -> str:
+        """Return the cardinal direction travelled from from_pos to to_pos."""
+        dx = to_pos[0] - from_pos[0]
+        dy = to_pos[1] - from_pos[1]
+        if abs(dx) >= abs(dy):
+            return "E" if dx >= 0 else "W"
+        return "S" if dy >= 0 else "N"
 
-        The trail tapers — wide where it touches the player's (or
-        chaser's) circle, narrow at the far tip — like a comet's tail.
-        trace[-1] is the most recent past position (closest to the
-        current position), trace[0] is the oldest.
+    def _draw_footprint(
+        self,
+        cx: int, cy: int,
+        direction: str,
+        left_foot: bool,
+        colour: Tuple[int, int, int],
+        alpha: int,
+    ) -> None:
         """
-        if len(trace) < 2:
+        Draw one tiny footprint at pixel position (cx, cy).
+
+        The print is two overlapping ellipses (heel + toe ball) oriented
+        in `direction`, mirrored for left vs right foot.
+
+        Size is proportional to cell_length so it always fits inside
+        the cell without touching walls.
+        """
+        c = self._dim(colour, alpha)
+        size = max(2, self.cell_length // 7)  # radius of heel ellipse
+        toe  = max(1, size * 2 // 3)          # radius of toe ball
+
+        # Unit vectors along and across the direction of travel.
+        # "across" is 90° counter-clockwise from along, which corresponds
+        # to the player's LEFT when facing the direction of travel.
+        along  = {"N": (0, -1), "S": (0, 1), "E": (1, 0), "W": (-1, 0)}[direction]
+        across = (along[1], -along[0])   # 90° CCW = player's left side
+
+        # Lateral offset: +1 = player's left, -1 = player's right
+        side = 1 if left_foot else -1
+        lx = cx + side * across[0] * size
+        ly = cy + side * across[1] * size
+
+        # Heel centre — slightly behind the print
+        hx = int(lx - along[0] * size * 0.4)
+        hy = int(ly - along[1] * size * 0.4)
+
+        # Toe centre — slightly ahead of centre
+        tx = int(lx + along[0] * size * 0.7)
+        ty = int(ly + along[1] * size * 0.7)
+
+        # Draw heel (larger oval) and toe ball (smaller oval)
+        # pygame.draw.ellipse needs a Rect; we fake it with circle for simplicity
+        # at small sizes circles and ovals are visually identical.
+        pygame.draw.circle(self.canvas, c, (hx, hy), size)
+        pygame.draw.circle(self.canvas, c, (tx, ty), toe)
+
+    def _draw_footprints(
+        self,
+        trace: List[Tuple[int, int]],
+        colour: Tuple[int, int, int],
+        step_offset: int = 0,   # added to step index for left/right alternation
+    ) -> None:
+        """
+        Draw a fading trail of footprints along the trace positions.
+
+        trace[0] is the oldest position (most faded), trace[-1] is the
+        most recent (most opaque, closest to the player's current position).
+        Footprints alternate left/right foot and are oriented in the
+        direction of travel between consecutive trace cells.
+        """
+        if not trace:
             return
         n = len(trace)
-        max_width = max(2, self.cell_length // 6)   # width nearest the head
-        min_width = 1                                # width at the far tip
-        for i in range(n - 1):
-            fade_t = (i + 1) / n   # 0 = oldest segment, 1 = newest (closest to head)
-            alpha = int(30 + 150 * fade_t)   # fades from old to new
-            c = self._dim(colour, alpha)
-            width = max(min_width, int(min_width + (max_width - min_width) * fade_t))
-            p0 = (self._cell_center(*trace[i])[0] + offset_x,
-                  self._cell_center(*trace[i])[1])
-            p1 = (self._cell_center(*trace[i + 1])[0] + offset_x,
-                  self._cell_center(*trace[i + 1])[1])
-            pygame.draw.line(self.canvas, c, p0, p1, width)
+        for i, pos in enumerate(trace):
+            fade_t = (i + 1) / n        # 0=oldest, 1=newest
+            alpha  = int(20 + 140 * fade_t)
+            left_foot = ((i + step_offset) % 2 == 0)
+
+            # Determine travel direction: look ahead if possible, else back
+            if i + 1 < n:
+                direction = self._travel_direction(pos, trace[i + 1])
+            elif i > 0:
+                direction = self._travel_direction(trace[i - 1], pos)
+            else:
+                direction = "E"   # single footprint: arbitrary direction
+
+            cx, cy = self._cell_center(*pos)
+            self._draw_footprint(cx, cy, direction, left_foot, colour, alpha)
 
     def _draw_players(self) -> None:
         """
@@ -432,6 +522,185 @@ class ChallengeRenderer:
                 cx, cy = self._cell_center(*pos)
                 pygame.draw.circle(self.canvas, colour, (cx, cy), r)
                 pygame.draw.circle(self.canvas, (255, 255, 255), (cx, cy), r, 1)
+
+    def _draw_stripe_ribbon(
+        self,
+        stripe_cells: List[Tuple[int, int]],
+        path_start_idx: int,
+        colour_a: Tuple[int, int, int],
+        colour_b: Optional[Tuple[int, int, int]] = None,
+        alpha: int = 160,
+        alpha_b: int = 160,
+    ) -> None:
+        """
+        Draw a continuous ribbon through the stripe cells, following
+        the exact route of the solution path.
+
+        Each cell gets a band running from its entry edge to its exit
+        edge (with a small `gap` inset from each wall), so the ribbon
+        reads as a painted line on the floor rather than filled squares.
+        At corners the band is drawn in two overlapping pieces
+        (entry-to-centre, then centre-to-exit) so the turn fills cleanly.
+
+        If colour_b is given the ribbon is split along its travel axis:
+          - N/S travel  → left half colour_a, right half colour_b
+          - E/W travel  → top half colour_a, bottom half colour_b
+        At corners each piece uses the axis of its own segment.
+        """
+        if not stripe_cells:
+            return
+
+        dirs = self.path[1]   # dirs[i] = direction from path cell i to i+1
+
+        # Gap from each wall edge: must be at least stroke_length so the
+        # ribbon never overlaps the wall rectangle.
+        gap  = self.stroke_length + 2
+        band = max(3, self.cell_length // 3)
+        half = band // 2
+
+        OPPOSITE = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+        # pixel offset from cell centre toward a direction
+        def _offset(direction: str, dist: int) -> Tuple[int, int]:
+            return {
+                "N": (0, -dist), "S": (0, dist),
+                "E": (dist, 0),  "W": (-dist, 0),
+            }[direction]
+
+        def _draw_segment(
+            cx: int, cy: int,
+            from_dir: Optional[str],
+            to_dir: Optional[str],
+            col_a: Tuple[int, int, int],
+            col_b: Optional[Tuple[int, int, int]],
+        ) -> None:
+            """
+            Draw one cell's worth of ribbon from from_dir side to to_dir side.
+            `from_dir` is where we entered (None = start of stripe, open end).
+            `to_dir`   is where we exit  (None = end of stripe, open end).
+            """
+            cl   = self.cell_length
+            half_cl = cl // 2
+
+            # reach: how far the band extends from centre toward each edge,
+            # minus the gap so it doesn't touch the wall.
+            reach = half_cl - gap
+
+            def _rect_for_direction(direction: str) -> pygame.Rect:
+                """Rectangle from centre to one wall side (with gap)."""
+                ox, oy = _offset(direction, 1)
+                # along the travel axis: full reach
+                # perpendicular: half the band width
+                if direction in ("N", "S"):
+                    return pygame.Rect(
+                        cx - half + 1, cy if direction == "S" else cy - reach,
+                        band - 1, reach,
+                    )
+                else:  # E / W
+                    return pygame.Rect(
+                        cx if direction == "E" else cx - reach,
+                        cy - half + 1,
+                        reach, band - 1,
+                    )
+
+            def _fill_rect(rect: pygame.Rect, travel: Optional[str],
+                           ca: Tuple[int, int, int],
+                           cb: Optional[Tuple[int, int, int]]) -> None:
+                """Fill a rect, optionally split by travel axis."""
+                if cb is None or rect.width == 0 or rect.height == 0:
+                    pygame.draw.rect(self.canvas, ca, rect)
+                    return
+                # split perpendicular to travel direction
+                if travel in ("N", "S"):
+                    # travelling vertically → divide left/right
+                    w2 = rect.width // 2
+                    pygame.draw.rect(self.canvas, ca,
+                                     pygame.Rect(rect.x, rect.y, w2, rect.height))
+                    pygame.draw.rect(self.canvas, cb,
+                                     pygame.Rect(rect.x + w2, rect.y,
+                                                 rect.width - w2, rect.height))
+                else:
+                    # travelling horizontally → divide top/bottom
+                    h2 = rect.height // 2
+                    pygame.draw.rect(self.canvas, ca,
+                                     pygame.Rect(rect.x, rect.y, rect.width, h2))
+                    pygame.draw.rect(self.canvas, cb,
+                                     pygame.Rect(rect.x, rect.y + h2,
+                                                 rect.width, rect.height - h2))
+
+            # centre square (always drawn)
+            centre = pygame.Rect(cx - half + 1, cy - half + 1,
+                                 band - 1, band - 1)
+            # use to_dir as the dominant axis for the centre square
+            dominant = to_dir or from_dir
+            _fill_rect(centre, dominant, ca=col_a, cb=col_b)
+
+            # arm toward where we came from
+            if from_dir:
+                r = _rect_for_direction(OPPOSITE[from_dir])
+                _fill_rect(r, from_dir, ca=col_a, cb=col_b)
+
+            # arm toward where we exit
+            if to_dir:
+                r = _rect_for_direction(to_dir)
+                _fill_rect(r, to_dir, ca=col_a, cb=col_b)
+
+        col_a = self._dim(colour_a, alpha)
+        col_b = self._dim(colour_b, alpha_b) if colour_b else None
+
+        for local_i, (sx, sy) in enumerate(stripe_cells):
+            path_i = path_start_idx + local_i
+            cx, cy = self._cell_center(sx, sy)
+
+            # direction we came from (entry side of this cell)
+            from_dir = OPPOSITE[dirs[path_i - 1]] if path_i > 0 and path_i - 1 < len(dirs) else None
+            # direction we exit toward (exit side of this cell)
+            to_dir   = dirs[path_i] if path_i < len(dirs) else None
+
+            # clamp to stripe: first cell has no from, last has no to
+            if local_i == 0:
+                from_dir = None
+            if local_i == len(stripe_cells) - 1:
+                to_dir = None
+
+            _draw_segment(cx, cy, from_dir, to_dir, col_a, col_b)
+
+    def _draw_double_triangle(
+        self,
+        cx: int, cy: int,
+        r: int,
+        pointing_up: bool,
+    ) -> None:
+        """
+        Draw two small triangles side-by-side (P1 colour left, P2 colour right)
+        centered at (cx, cy) with size r.  Used as entry/exit markers on
+        sync (two-colored) stripes.  pointing_up=True for entry, False for exit.
+        """
+        offset = r + 1   # horizontal gap between the two triangles
+        for colour, sign in ((self.p1_colour, -1), (self.p2_colour, 1)):
+            px = cx + sign * offset
+            if pointing_up:
+                tri = [(px, cy - r), (px - r, cy + r), (px + r, cy + r)]
+            else:
+                tri = [(px, cy + r), (px - r, cy - r), (px + r, cy - r)]
+            pygame.draw.polygon(self.canvas, colour, tri)
+            pygame.draw.polygon(self.canvas, (255, 255, 255), tri, 1)
+
+    def _draw_chaser(self, chaser_index: int, chaser_trace: List[Tuple[int, int]]) -> None:
+        """
+        Draw the chaser's fading trail and pulsing red head dot.
+        Shared by level 3 and level 6 so they don't duplicate this code.
+        """
+        self._draw_footprints(chaser_trace, (220, 50, 50), step_offset=1)
+
+        if chaser_index < len(self.path[0]):
+            cell = self.path[0][chaser_index]
+            cx, cy = self._cell_center(cell.x, cell.y)
+            r = max(3, self.cell_length // 3)
+            pulse = abs((self.elapsed_ms % 600) - 300) / 300.0
+            bright = int(180 + 75 * pulse)
+            pygame.draw.circle(self.canvas, (bright, 30, 30), (cx, cy), r)
+            pygame.draw.circle(self.canvas, (255, 80, 80), (cx, cy), max(1, r // 2))
 
     def _draw_panel(self) -> None:
         """Right-side info panel: level name, timer, legend, level extras."""
@@ -483,8 +752,28 @@ class ChallengeRenderer:
             self.font.render("P2  (WASD)", True, self.text_colour), (x + 24, y))
         y += 36
 
-        # level-specific panel rows (collectables score / chaser bar)
+        # level-specific panel rows (collectables score / chaser bar / stripes)
         y = self._on_panel_extras(x, y)
+
+        # waiting indicator — shown as soon as one player reaches the exit
+        # but before both have, so the waiting player knows what's happening
+        if self.winner is None:
+            if self.p1_finished and not self.p2_finished:
+                pygame.draw.line(self.info_canvas, (80, 80, 100),
+                                  (x, y), (self.info_width - x, y), 1)
+                y += 10
+                self.info_canvas.blit(
+                    self.font.render("P1 at exit — waiting for P2",
+                                      True, self.p1_colour), (x, y))
+                y += 24
+            elif self.p2_finished and not self.p1_finished:
+                pygame.draw.line(self.info_canvas, (80, 80, 100),
+                                  (x, y), (self.info_width - x, y), 1)
+                y += 10
+                self.info_canvas.blit(
+                    self.font.render("P2 at exit — waiting for P1",
+                                      True, self.p2_colour), (x, y))
+                y += 24
 
         # winner / loss screen
         if self.winner is not None:
@@ -492,12 +781,14 @@ class ChallengeRenderer:
                               (x, y), (self.info_width - x, y), 1)
             y += 14
             if self.winner == "Chaser":
-                msg1, msg2, col = ("Chaser wins!",
-                                    "Both players lose!", (220, 50, 50))
+                msg1 = "Chaser wins!"
+                msg2 = "Both players lose!"
+                col  = (220, 50, 50)
             else:
-                msg1 = f"{self.winner} wins!"
+                # "Both players" — all levels now finish cooperatively
+                msg1 = "Both finish!"
                 msg2 = f"Time: {self.winner_time_ms / 1000.0:0.1f}s"
-                col = (249, 240, 2)
+                col  = (100, 220, 150)
             self.info_canvas.blit(
                 self.font_title.render(msg1, True, col), (x, y))
             y += 38
@@ -520,8 +811,8 @@ class ChallengeRenderer:
             self._draw_reveal_line()
         else:
             # race phase — traces, then level extras, then avatars on top
-            self._draw_trace(self.p1_trace, self.p1_colour, -self.TRACE_OFFSET)
-            self._draw_trace(self.p2_trace, self.p2_colour, self.TRACE_OFFSET)
+            self._draw_footprints(self.p1_trace, self.p1_colour, step_offset=0)
+            self._draw_footprints(self.p2_trace, self.p2_colour, step_offset=1)
             self._on_draw_extras()
             self._draw_players()
         self.screen.blit(self.canvas, (0, 0))

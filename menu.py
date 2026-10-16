@@ -146,61 +146,65 @@ class MenuScreen:
     def _draw_main_panel(self) -> None:
         """
         Draw the right-side panel with menu options and hints.
-        Highlights the currently selected option.
+
+        Visual hierarchy:
+          PRIMARY   (large, bright)  — Challenge Mode, Quit
+          SECONDARY (small, dim)     — Random Maze, Custom Maze
         """
         self.panel_surface.fill(PANEL_COLOR)
         x = 20
-        y = 60
+        y = 50
 
-        # title
-        title = self.font_title.render("MAKE CHOICE", True, TEXT_COLOR)
+        title = self.font_title.render("A-MAZE-ING", True, TEXT_COLOR)
         self.panel_surface.blit(title, (x, y))
-        y += 60
+        y += 50
 
-        # thin separator line
-        pygame.draw.line(
-            self.panel_surface, DIM_COLOR,
-            (x, y), (self.PANEL_WIDTH - x, y), 1
-        )
-        y += 40
-
-        # menu options
-        options = [
-            "Random Maze",
-            "Custom Maze",
-            "Challenge Mode",
-            "Quit",
-        ]
-
-        for i, label in enumerate(options):
-            if i == self.selected_index:
-                arrow = "▶  "
-                color = SELECTED_COLOR
-            else:
-                arrow = "    "
-                color = TEXT_COLOR
-
-            line = self.font_option.render(arrow + label, True, color)
-            self.panel_surface.blit(line, (x, y))
-            y += 60
-
-        y += 10
-        pygame.draw.line(
-            self.panel_surface, DIM_COLOR,
-            (x, y), (self.PANEL_WIDTH - x, y), 1
-        )
+        pygame.draw.line(self.panel_surface, DIM_COLOR,
+                         (x, y), (self.PANEL_WIDTH - x, y), 1)
         y += 20
 
-        # hints
-        hints = [
-            ("↑ ↓",   "navigate"),
-            ("ENTER", "confirm"),
+        # Secondary options — smaller font, dimmer colour
+        secondary = [
+            (OPTION_RANDOM, "Random Maze"),
+            (OPTION_CUSTOM, "Custom Maze"),
         ]
+        for idx, label in secondary:
+            selected = (idx == self.selected_index)
+            arrow = "▶ " if selected else "   "
+            color = SELECTED_COLOR if selected else DIM_COLOR
+            surf = self.font_hint.render(arrow + label, True, color)
+            self.panel_surface.blit(surf, (x, y))
+            y += 26
+
+        y += 16
+        pygame.draw.line(self.panel_surface, DIM_COLOR,
+                         (x, y), (self.PANEL_WIDTH - x, y), 1)
+        y += 24
+
+        # Primary options — large font, full brightness
+        primary = [
+            (OPTION_CHALLENGE, "Challenge Mode"),
+            (OPTION_QUIT,      "Quit"),
+        ]
+        for idx, label in primary:
+            selected = (idx == self.selected_index)
+            arrow = "▶  " if selected else "    "
+            color = SELECTED_COLOR if selected else TEXT_COLOR
+            surf = self.font_option.render(arrow + label, True, color)
+            self.panel_surface.blit(surf, (x, y))
+            y += 56
+
+        y += 10
+        pygame.draw.line(self.panel_surface, DIM_COLOR,
+                         (x, y), (self.PANEL_WIDTH - x, y), 1)
+        y += 20
+
+        hints = [("↑ ↓", "navigate"), ("ENTER", "confirm")]
         for key, desc in hints:
-            key_surf  = self.font_hint.render(f"[{key}]", True, HINT_COLOR)
-            desc_surf = self.font_hint.render(desc, True, TEXT_COLOR)
-            self.panel_surface.blit(key_surf,  (x,      y))
-            self.panel_surface.blit(desc_surf, (x + 80, y))
+            self.panel_surface.blit(
+                self.font_hint.render(f"[{key}]", True, HINT_COLOR), (x, y))
+            self.panel_surface.blit(
+                self.font_hint.render(desc, True, TEXT_COLOR), (x + 80, y))
             y += 26
 
         self.screen.blit(self.panel_surface, (self.maze_area_width, 0))

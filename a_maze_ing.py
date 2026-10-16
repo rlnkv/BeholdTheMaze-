@@ -1,121 +1,85 @@
-import pygame
-from renderer import Renderer
-from menu import MenuScreen
-from challenge.runner import run_challenge_mode  # NEW: moved out of this file, see challenge/runner.py
-import random
-from typing import Tuple, List
-from maze import Maze, HuntAndKillGenerator, add_42_pattern, Cell
-from path_finder import PathFinder
+"""
+Entry point — starts pygame, shows the menu, and runs the chosen mode.
+"""
 
-# NOTE: _safe_random_cell and run_challenge_mode used to live in this
-# file. _safe_random_cell is now the shared maze_utils.safe_random_cell
-# (no longer needed directly here at all), and run_challenge_mode moved
-# to challenge/runner.py so all challenge-mode code lives in one place.
+import random
+from typing import List, Tuple
+
+import pygame
+
+from challenge.runner import run_challenge_mode
+from maze import Cell, HuntAndKillGenerator, Maze, add_42_pattern
+from menu import MenuScreen
+from path_finder import PathFinder
+from renderer import Renderer
 
 
 class MazeGenerator:
-    """
-    Generate and solve mazes using configurable parameters.
+    """Generates and solves a maze with the given parameters."""
 
-    Attributes:
-        width (int): Width of the maze.
-        height (int): Height of the maze.
-        entry (Tuple[int, int]): Entry coordinates.
-        exit (Tuple[int, int]): Exit coordinates.
-        seed (int): Random seed used for generation.
-        maze (Maze): Generated maze instance.
-    """
-
-    def __init__(self, width: int, height: int,
-                 entry: Tuple[int, int],
-                 exit: Tuple[int, int],
-                 seed: int | None) -> None:
-        self.width = width
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        entry: Tuple[int, int],
+        exit: Tuple[int, int],
+        seed: int | None,
+    ) -> None:
+        self.width  = width
         self.height = height
-        self.entry = entry
-        self.exit = exit
-        self.seed = seed if seed is not None else random.randint(1, 10000)
+        self.entry  = entry
+        self.exit   = exit
+        self.seed   = seed if seed is not None else random.randint(1, 10000)
+        self.maze: Maze
 
     def generate(self) -> Maze:
-        """
-        Generate and return a maze instance.
-
-        Initializes a maze, applies a predefined 42 pattern,
-        and runs the hunt-and-kill generation algorithm.
-
-        Returns:
-            Maze: Generated maze instance.
-        """
+        """Build and return the maze."""
         self.maze = Maze(self.width, self.height)
         add_42_pattern(self.maze)
-        generator = HuntAndKillGenerator(self.seed)
-        generator.generate(self.maze)
+        HuntAndKillGenerator(self.seed).generate(self.maze)
         return self.maze
 
     def solve(self) -> Tuple[List[Cell], List[str]]:
-        """
-        Solve the maze and return the path.
-
-        Uses a pathfinding algorithm to compute a path from the
-        entry cell to the exit cell.
-
-        Returns:
-            Tuple[List[Cell], List[str]]: Path as a list of cells
-                and corresponding directions.
-        """
-        pathfinder = PathFinder(self.maze)
+        """Return the (cells, directions) solution path."""
         entry_cell = self.maze.get_cell(*self.entry)
-        exit_cell = self.maze.get_cell(*self.exit)
-        path = pathfinder.find_path(entry_cell, exit_cell)
-        return path
+        exit_cell  = self.maze.get_cell(*self.exit)
+        return PathFinder(self.maze).find_path(entry_cell, exit_cell)
 
 
 def main() -> None:
-    """
-    Program entry point.
-
-    1. Start pygame and open the window once — shared by all screens.
-    2. Show the menu and let the user pick settings.
-    3. Generate the maze with those settings.
-    4. Hand everything to the Renderer.
-    """
     pygame.init()
+    import game_sounds as sounds
+    sounds.init()
     screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     pygame.display.set_caption("Behold! The MAZE!")
 
     try:
         while True:
-            menu = MenuScreen(screen)
-            result = menu.run()
+            result = MenuScreen(screen).run()
 
             if result is None:
                 break
 
             if result[0] == "challenge":
                 _, level = result
-                back_to_menu = run_challenge_mode(screen, level)
-                if not back_to_menu:
+                if not run_challenge_mode(screen, level):
                     break
                 continue
 
             width, height, entry, exit_pos, seed, is_random = result
+            gen  = MazeGenerator(width, height, entry, exit_pos, seed)
+            maze = gen.generate()
+            path = gen.solve()
 
-            generator = MazeGenerator(width, height, entry,
-                                      exit_pos, seed)
-            maze = generator.generate()
-            path = generator.solve()
-
-            renderer = Renderer(maze, path, entry, exit_pos, screen,
-                                randomize_on_regen=is_random)
-            back_to_menu = renderer.run()
-            if not back_to_menu:
+            if not Renderer(maze, path, entry, exit_pos, screen,
+                            randomize_on_regen=is_random).run():
                 break
 
     except KeyboardInterrupt:
-        pass   # Ctrl-C is a normal way to quit; no traceback needed
-    except Exception as e:
+        pass
+    except Exception:
         pygame.quit()
-        raise   # re-raise so the traceback is visible in the terminal
+        raise
     pygame.quit()
 
 
